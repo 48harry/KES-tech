@@ -1,0 +1,20 @@
+# UI (프론트엔드)
+streamlit
+
+# LangChain & LangGraph (백엔드 에이전트)
+langchain-core
+langchain-community
+langchain-text-splitters
+langgraph
+
+# LLM (Google Gemini)
+langchain-google-genai
+
+# RAG & Vector DB (임베딩 및 FAISS)
+langchain-huggingface
+sentence-transformers
+faiss-cpu
+pymupdf
+
+# 환경변수 관리
+python-dotenv
