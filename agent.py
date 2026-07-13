@@ -43,6 +43,9 @@ class AgentState(TypedDict):
     retrieved_data: str   # KIPRIS나 IPCAST에서 가져온 데이터 결과
     current_step: str     # 현재 진행 중인 노드 위치
     verification_failed: bool # 검증실예외처리
+    fail_reason : str
+    tool_call_count: int 
+
 
 #=======================================
 # External tool-calling
@@ -56,7 +59,7 @@ def search_kipris_api(query: str) -> str:
     api_key = os.getenv("KIPRIS_API_KEY", "YOUR_DEFAULT_KEY")
     
     # KIPRIS Plus 특허검색 실전 엔드포인트 URL
-    url = "http://plus.kipris.or.kr/openapi/rest/PatentSvc/searchWord"
+    url = "https://plus.kipris.or.kr/kipo-api/kipi/patUtiModInfoSearchSevice/getWordSearch"
     
     headers = {"User-Agent": "Mozilla/5.0"}
     params = {"accessKey": api_key, "searchWord": query, "numOfRows": 5}
@@ -138,16 +141,23 @@ def reasoning_node(state: AgentState):
     guard = ""
     if state.get("verification_failed"):
         guard = f"\n\n[가드레일] 직전 검색 결과가 신뢰 기준 미달({state.get('fail_reason')})이었습니다. 지어내지 말고 못 찾았다고 답하세요."
+    
+    tool_call_count = state.get("tool_call_count", 0)
+
     sys_msg = SystemMessage(content= """
     너는 KEA의 수석 특허 분석 AI야.
     이전 대화 내역을 기억하고, 사용자의 질문에 자연스럽게 답해줘.
-    질문에 '내부 문서'나 특허 관련 정보가 필요하면 반드시 'search_internal_document' 도구를 딱 1번만 호출해.
-    검색된 데이터를 바탕으로 [기술 요약], [특허 번호], [핵심 청구항]을 마크다운으로 정리해줘.
+    사용자가 업로드한 문서 내용에 대한 질문이면 'search_internal_document'를,
+    업로드 문서에 없는 최신/외부 특허 정보가 필요하면 'search_kipris_api'를
+    상황에 맞게 딱 1번만 호출해.검색된 데이터를 바탕으로 [기술 요약], [특허 번호], [핵심 청구항]을 마크다운으로 정리해줘.
     데이터가 부족하다면 "검색된 데이터에서 내용을 찾을 수 없습니다"라고 명확히 말해.
     어떠한 경우에도 빈칸("")만 출력하지 마.
     """ + guard)
     
-    response = llm_with_tools.invoke([sys_msg] + messages)
+    if tool_call_count >= 1:
+        response = llm.invoke([sys_msg] + messages)      # tool 미바인딩 llm으로 답변 강제
+    else:
+        response = llm_with_tools.invoke([sys_msg] + messages)
     
     current_intent = "일반 대화"
     search_keyword = "없음"
@@ -169,7 +179,8 @@ def reasoning_node(state: AgentState):
         "messages": [response],
         "user_intent": current_intent,
         "search_query": search_keyword,
-        "current_step": "의도 분류 및 라우팅 완료"
+        "current_step": "의도 분류 및 라우팅 완료",
+        "tool_call_count": tool_call_count + (1 if response.tool_calls else 0)
     }
 
 def router_edge(state: AgentState):
@@ -179,31 +190,24 @@ def router_edge(state: AgentState):
 
 def verification_node(state: AgentState):
     print("\n--- [VERIFICATION NODE] 가동: 데이터 신뢰성 검증 시작 ---")
-    
     messages = state.get("messages", [])
-    
-    # 1. 가장 최근에 실행된 메시지가 도구(Tool)의 결과물인지 확인
     last_message = messages[-1] if messages else None
-    
-    verification_passed = True
+
     fail_reason = ""
-    tool_output = ""
-    
     if last_message and last_message.type == "tool":
         tool_output = str(last_message.content).strip()
-        
-        # [조건 1] 도구가 빈 값을 리턴했거나 검색 실패 메시지를 반환한 경우
         FAIL_MARKERS = ["[오류]", "찾지 못했습니다", "연결 실패", "호출 중 오류"]
         if not tool_output or any(m in tool_output for m in FAIL_MARKERS):
             fail_reason = "검색 결과 공백(Empty Result)"
         elif len(tool_output) < 20:
             fail_reason = "검색 텍스트 데이터 부족 (신뢰도 미달)"
 
-    # 2. 검증 결과에 따른 분기 처리 및 감사 추적(Audit Trail) 기록
-    if not verification_passed:
+    if fail_reason:
         print(f"⚠️ [검증 실패]: {fail_reason} -> LLM 환각 방지 조치 발동")
         return {"verification_failed": True, "fail_reason": fail_reason,
                 "current_step": f"VERIFICATION_FAILED: {fail_reason}"}
+
+    return {"verification_failed": False, "current_step": "검증 통과"}
 
 tool_node = ToolNode(tools)
 
@@ -239,8 +243,8 @@ def run_agent(chat_history: list, retriever=None) -> str:
     final_output = None
     
     print(f"[LangGraph 추적 시작]")
-    
-    for output in tech_gpt.invoke(initial_state):
+
+    for output in tech_gpt.stream(initial_state, config={"recursion_limit": 10}, stream_mode="updates"):    
         node_name = list(output.keys())[0]
         node_update = output[node_name]
 

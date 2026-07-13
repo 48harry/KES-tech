@@ -17,6 +17,9 @@ logging.basicConfig(
     ]
 )
 
+logger = logging.getLogger(__name__)
+logger.info("🚀 KEA Tech-GPT 앱이 성공적으로 시작되었습니다.")
+
 # 🔥 [핵심 수정 포인트] 앱이 시작되자마자 가장 먼저 빈 대화 바구니를 만들어줍니다.
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -30,18 +33,29 @@ with st.sidebar:
         file_sig = (uploaded_file.name, uploaded_file.size)
         if st.session_state.get("processed_file_sig") != file_sig:
             if uploaded_file.size > 5 * 1024 * 1024:
-                st.error("🚨 파일이 너무 큽니다!")
+                st.error("파일이 너무 큽니다!")
             else:
                 with st.spinner("문서를 분석하고 DB를 굽는 중입니다..."):
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
-                        tmp_file.write(uploaded_file.getvalue())
-                        tmp_file_path = tmp_file.name
-                    st.session_state["retriever"] = setup_pdf_database(tmp_file_path)
-                    os.remove(tmp_file_path)  # 임시 파일 정리
-                st.session_state["processed_file_sig"] = file_sig
-                st.success("✅ 문서 분석 준비 완료!")
+                    tmp_file_path = None
+                    try:
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+                            tmp_file.write(uploaded_file.getvalue())
+                            tmp_file_path = tmp_file.name
+
+                        st.session_state["retriever"] = setup_pdf_database(tmp_file_path)
+                        st.success("문서 분석 준비 완료!")
+
+                    except Exception as e:
+                        logger.error(f"[PDF 처리 오류] {e}")
+                        st.error("PDF 분석 중 오류가 발생했습니다. 다른 파일로 시도해주세요.")
+                        st.session_state["retriever"] = None
+
+                    finally:
+                        st.session_state["processed_file_sig"] = file_sig  # 실패해도 같은 파일 재시도 반복 방지
+                        if tmp_file_path and os.path.exists(tmp_file_path):
+                            os.remove(tmp_file_path)        
         else:
-            st.success("✅ 문서 분석 준비 완료!")
+            st.success("문서 분석 준비 완료!")
 
 # --- 기존 사이드바 코드 아래에 추가 ---
 with st.sidebar:
@@ -51,7 +65,12 @@ with st.sidebar:
     # 대화 내용이 있을 때만 버튼 활성화
     if len(st.session_state.messages) > 1:
         if st.button("📝 대화 내용으로 보고서 만들기"):
-            st.session_state["report_content"] = generate_automatic_report(st.session_state.messages)
+            try:
+                with st.spinner("보고서를 작성하는 중입니다..."):
+                    st.session_state["report_content"] = generate_automatic_report(st.session_state.messages)
+            except Exception as e:
+                logger.error(f"[보고서 생성 오류] {e}")
+                st.error("🚨 보고서 생성 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.")
 
         if st.session_state.get("report_content"):
             with st.expander("👀 보고서 미리보기"):
@@ -62,8 +81,6 @@ with st.sidebar:
     else:
         st.info("채팅을 시작하면 보고서 생성 기능이 활성화됩니다.")
 
-logger = logging.getLogger(__name__)
-logger.info("🚀 KEA Tech-GPT 앱이 성공적으로 시작되었습니다.")
 
 # --- 2. 기존 채팅 UI (동일함) ---
 if "messages" not in st.session_state:
@@ -84,6 +101,9 @@ if prompt := st.chat_input("질문을 입력해주세요"):
         with st.spinner("AI가 생각 중입니다..."):
             MAX_MESSAGES = 6
             optimized_messages = st.session_state.messages[-MAX_MESSAGES:]
+            if optimized_messages and optimized_messages[0]["role"] != "user":
+                optimized_messages = optimized_messages[1:]
+            
             try:
                 response = run_agent(optimized_messages, retriever=st.session_state.get("retriever"))
                 logger.info(f"[AI 답변 완료] ...")
