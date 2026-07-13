@@ -21,20 +21,19 @@ from langgraph.prebuilt import ToolNode, InjectedState
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv() #streamlit cloud에서는 필요 x
 
 #=======================================
 # GEMINI
 #=======================================
 
-# LLM모델 (결정성을 높이기 위해 temperature는 0으로 설정)
 llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
 
 #=======================================
 # LANGGRAPH
 #=======================================
 
-# 에이전트들이 공유할 '기억 바구니(State)' 설계
+# 에이전트들이 공유할 '기억 바구니' 설계
 class AgentState(TypedDict):
     messages: Annotated[List[BaseMessage], operator.add] # 에이전트와 사용자의 대화 기록
     retriever: Optional[Any]        # 사용자별 pdf첨부 구분용
@@ -42,10 +41,9 @@ class AgentState(TypedDict):
     search_query: str     # API에 던질 검색 키워드 (예: "스마트 가전 표준 특허")
     retrieved_data: str   # KIPRIS나 IPCAST에서 가져온 데이터 결과
     current_step: str     # 현재 진행 중인 노드 위치
-    verification_failed: bool # 검증실예외처리
+    verification_failed: bool # 검증실패 예외처리
     fail_reason : str
     tool_call_count: int 
-
 
 #=======================================
 # External tool-calling
@@ -67,7 +65,6 @@ def search_kipris_api(query: str) -> str:
     try:
         response = requests.get(url, params=params, headers=headers, timeout=10)
         if response.status_code == 200:
-            # XML 응답 데이터 파싱 및 텍스트 정제
             root = ET.fromstring(response.text)
             
             patent_list = []
@@ -91,9 +88,8 @@ def search_kipris_api(query: str) -> str:
         return f"KIPRIS API 호출 중 오류 발생: {str(e)}"
 
 #=======================================
-# RAG
+# Internal documents
 #=======================================
-
 
 pdf_retriever = None
 global_retriever = None
@@ -126,7 +122,7 @@ def search_internal_document(query: str, state: Annotated[dict, InjectedState]) 
 #=======================================
 
 # node에 필요한 tools 정리
-tools = [search_internal_document, search_kipris_api]
+tools = [search_internal_document, search_kipris_api] #추가시 추가
 llm_with_tools = llm.bind_tools(tools)
 
 #=======================================
@@ -155,7 +151,7 @@ def reasoning_node(state: AgentState):
     """ + guard)
     
     if tool_call_count >= 1:
-        response = llm.invoke([sys_msg] + messages)      # tool 미바인딩 llm으로 답변 강제
+        response = llm.invoke([sys_msg] + messages)
     else:
         response = llm_with_tools.invoke([sys_msg] + messages)
     
@@ -173,7 +169,7 @@ def reasoning_node(state: AgentState):
             
         search_keyword = str(response.tool_calls[0]["args"])
     
-    print(f"💡 [라우팅 결정] 의도: {current_intent} / 검색어: {search_keyword}")
+    print(f"[라우팅 결정] 의도: {current_intent} / 검색어: {search_keyword}")
 
     return {
         "messages": [response],
@@ -197,13 +193,14 @@ def verification_node(state: AgentState):
     if last_message and last_message.type == "tool":
         tool_output = str(last_message.content).strip()
         FAIL_MARKERS = ["[오류]", "찾지 못했습니다", "연결 실패", "호출 중 오류"]
+        
         if not tool_output or any(m in tool_output for m in FAIL_MARKERS):
             fail_reason = "검색 결과 공백(Empty Result)"
         elif len(tool_output) < 20:
             fail_reason = "검색 텍스트 데이터 부족 (신뢰도 미달)"
 
     if fail_reason:
-        print(f"⚠️ [검증 실패]: {fail_reason} -> LLM 환각 방지 조치 발동")
+        print(f"[검증 실패]: {fail_reason} -> LLM 환각 방지 조치 발동")
         return {"verification_failed": True, "fail_reason": fail_reason,
                 "current_step": f"VERIFICATION_FAILED: {fail_reason}"}
 
@@ -264,7 +261,7 @@ def run_agent(chat_history: list, retriever=None) -> str:
     return final_output if final_output else "답변을 생성하지 못했습니다."
 
 #=======================================
-# additional features
+# additional features (문서자동생성)
 #=======================================
 
 def generate_automatic_report(chat_history):

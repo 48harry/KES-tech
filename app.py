@@ -7,7 +7,9 @@ import logging
 st.set_page_config(page_title="KEA Tech-GPT", page_icon="🤖")
 st.title("🤖 KEA Tech-GPT (동적 문서 분석)")
 
-# --- [로거(Logger) 세팅] ---
+#=======================================
+# Logger
+#=======================================
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -20,11 +22,12 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 logger.info("🚀 KEA Tech-GPT 앱이 성공적으로 시작되었습니다.")
 
-# 🔥 [핵심 수정 포인트] 앱이 시작되자마자 가장 먼저 빈 대화 바구니를 만들어줍니다.
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# --- 1. 사이드바: 파일 업로드 UI ---
+#=======================================
+# file upload
+#=======================================
 with st.sidebar:
     st.header("📄 분석할 문서 첨부")
     uploaded_file = st.file_uploader("PDF 파일을 업로드하세요", type=["pdf"])
@@ -57,7 +60,9 @@ with st.sidebar:
         else:
             st.success("문서 분석 준비 완료!")
 
-# --- 기존 사이드바 코드 아래에 추가 ---
+#=======================================
+# 보고서생성
+#=======================================
 with st.sidebar:
     st.divider() # 구분선
     st.header("📊 자동 보고서 생성")
@@ -82,16 +87,19 @@ with st.sidebar:
         st.info("채팅을 시작하면 보고서 생성 기능이 활성화됩니다.")
 
 
-# --- 2. 기존 채팅 UI (동일함) ---
+#=======================================
+# 채팅 UI
+#=======================================
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# 대화 기록 렌더링
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# 사용자 입력 처리 (logging+except처리)
+#=======================================
+# 사용자 입력처리
+#=======================================
 
 if prompt := st.chat_input("질문을 입력해주세요"):
     st.session_state.messages.append({"role": "user", "content": prompt})
