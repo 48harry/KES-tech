@@ -58,7 +58,10 @@ with st.sidebar:
                         if tmp_file_path and os.path.exists(tmp_file_path):
                             os.remove(tmp_file_path)        
         else:
-            st.success("문서 분석 준비 완료!")
+            if st.session_state.get("retriever") is not None:
+                st.success("문서 분석 준비 완료!")
+            else:
+                st.error("이전 처리에 실패한 파일입니다. 다른 파일을 업로드해 주세요.")
 
 #=======================================
 # 보고서생성

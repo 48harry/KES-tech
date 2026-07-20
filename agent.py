@@ -3,9 +3,12 @@
 #=======================================
 
 import os
-from typing import TypedDict, List, Annotated, Optional, Any
 import operator
 import requests
+import functools
+import logging
+
+from typing import TypedDict, List, Annotated, Optional, Any
 import xml.etree.ElementTree as ET
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -58,6 +61,9 @@ def search_kipris_api(query: str) -> str:
     
     # KIPRIS Plus 특허검색 실전 엔드포인트 URL
     url = "https://plus.kipris.or.kr/kipo-api/kipi/patUtiModInfoSearchSevice/getWordSearch"
+
+    if not api_key or api_key == "YOUR_DEFAULT_KEY":
+        return "🚨 [시스템 안내] KIPRIS API 키가 설정되지 않았거나 기본값입니다. .env 파일의 환경 변수를 확인해주세요."
     
     headers = {"User-Agent": "Mozilla/5.0"}
     params = {"accessKey": api_key, "searchWord": query, "numOfRows": 5}
@@ -90,9 +96,6 @@ def search_kipris_api(query: str) -> str:
 #=======================================
 # Internal documents
 #=======================================
-
-pdf_retriever = None
-global_retriever = None
 
 def setup_pdf_database(pdf_path):
     
@@ -172,17 +175,21 @@ def reasoning_node(state: AgentState):
     print(f"[라우팅 결정] 의도: {current_intent} / 검색어: {search_keyword}")
 
     return {
-        "messages": [response],
-        "user_intent": current_intent,
-        "search_query": search_keyword,
-        "current_step": "의도 분류 및 라우팅 완료",
-        "tool_call_count": tool_call_count + (1 if response.tool_calls else 0)
-    }
+    "messages": [response],
+    "user_intent": current_intent,
+    "search_query": search_keyword,
+    "current_step": "call_tool" if response.tool_calls else "답변 완료",
+    "tool_call_count": tool_call_count + (1 if response.tool_calls else 0)
+}
 
-def router_edge(state: AgentState):
-    if state["messages"][-1].tool_calls:
-        return "tools"
-    return END
+def router_edge(state: dict):
+    if state.get("current_step") == "call_tool":
+        tool_count = state.get("tool_call_count", 0)
+        if tool_count >= 2:
+            logging.info("툴 호출 제한(2회) 도달. 강제로 답변을 생성합니다.")
+            return "reason"      # 실제 등록된 노드명
+        return "tools"           # 실제 등록된 노드명
+    return END    
 
 def verification_node(state: AgentState):
     print("\n--- [VERIFICATION NODE] 가동: 데이터 신뢰성 검증 시작 ---")
@@ -267,15 +274,25 @@ def run_agent(chat_history: list, retriever=None) -> str:
 def generate_automatic_report(chat_history):
     """채팅 기록을 바탕으로 마크다운 형식의 보고서를 생성합니다."""
     
-    # 시스템 프롬프트 및 사용자와 AI의 대화 내역을 하나의 텍스트로 묶기
+    has_search_context = False
+    formatted_history = []
+
     conversation_text = ""
     for msg in chat_history:
-        # 시스템 메시지나 초기 인사말은 제외하고 실제 대화만 추출
+
         if msg["role"] in ["user", "assistant"]:
             role_name = "사용자" if msg["role"] == "user" else "AI"
             conversation_text += f"[{role_name}]: {msg['content']}\n\n"
 
-    # 보고서 생성을 위한 전용 프롬프트
+            content = msg.content if hasattr(msg, 'content') else msg.get("content", "")
+            role = "AI" if getattr(msg, 'type', '') == 'ai' or msg.get("role") == "assistant" else "User"
+            formatted_history.append(f"{role}: {content}")
+            
+            # AI의 답변 중 실제 검색 결과 마커가 있는지 확인
+            if role == "AI" and any(keyword in content for keyword in ["[기술 요약]", "[특허 번호]", "출원인"]):
+                has_search_context = True
+
+    # 보고서 생성 프롬프트
     report_prompt = ChatPromptTemplate.from_messages([
         ("system", """당신은 전문적인 기술/특허 분석 보고서 작성기입니다. 
         사용자와 AI가 나눈 아래의 대화 내역을 분석하여, 핵심 내용을 깔끔한 '마크다운(Markdown)' 형식의 보고서로 정리해주세요.
@@ -286,12 +303,20 @@ def generate_automatic_report(chat_history):
         3. 기술/특허 분석 인사이트 (Insights)
         4. 결론 및 향후 방향성 (Conclusion)
         
-        말투는 "~함", "~임"과 같은 전문적인 개조식 문체를 사용하세요."""),
+        말투는 "~함", "~임"과 같은 전문적인 개조식 문체를 사용하세요.
+         
+        [중요 가이드라인]
+        1. 현재 대화 내역에 실제 특허 검색 결과 데이터가 포함되어 있는가?: {has_search_context}
+        2. 만약 위 항목이 'False'라면, '특허 분석 보고서' 형식을 강제하지 말고 '일반 비즈니스/기술 상담 요약본' 형태로 담백하게 작성해줘.
+        3.데이터가 없는데 구조에 맞추기 위해 가짜 특허 번호나 기업명을 지어내는(할루시네이션) 것은 절대 금지합니다. 
+        """),
+
         ("user", "다음 대화 내역을 바탕으로 보고서를 작성해주세요:\n{conversation}")
     ])
     
     # 체인 구성 및 실행
     report_chain = report_prompt | llm 
-    response = report_chain.invoke({"conversation": conversation_text})
-    
+    response = report_chain.invoke({
+    "conversation": conversation_text,
+    "has_search_context": has_search_context,})    
     return response.content
